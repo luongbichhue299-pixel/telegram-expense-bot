@@ -1,5 +1,8 @@
 import datetime
 import pytz
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from config import TELEGRAM_BOT_TOKEN, ALLOWED_USER_ID
 from handlers import start_command, today_command, handle_message
@@ -7,6 +10,17 @@ from logger import logger
 import sheets
 
 VN_TZ = pytz.timezone('Asia/Ho_Chi_Minh')
+
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), DummyHandler)
+    server.serve_forever()
 
 async def daily_summary_job(context):
     """Job gửi báo cáo hàng ngày vào lúc 23:00"""
@@ -17,13 +31,10 @@ async def daily_summary_job(context):
               "July", "August", "September", "October", "November", "December"]
     month_str = f"{months[now.month - 1]} {now.year}"
     
-    # Lấy dữ liệu
     today_items, today_total = sheets.get_today_expenses(date_str)
     income, month_expense, balance = sheets.get_monthly_summary(month_str)
     
-    # Xây dựng báo cáo
     report = f"📊 TỔNG KẾT CHI TIÊU HÀNG NGÀY\n📅 Hôm nay: {date_str}\n\n"
-    
     if today_items:
         report += "📝 Chi tiết hôm nay:\n"
         for content, amount in today_items:
@@ -44,21 +55,17 @@ async def daily_summary_job(context):
 
 def main():
     logger.info("Đang khởi động bot...")
+    threading.Thread(target=run_dummy_server, daemon=True).start()
     
-    # Tạo ứng dụng bot
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Đăng ký handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", start_command))
     application.add_handler(CommandHandler("today", today_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Đăng ký job hàng ngày lúc 23:00 GMT+7
     target_time = datetime.time(hour=23, minute=0, tzinfo=VN_TZ)
     application.job_queue.run_daily(daily_summary_job, time=target_time)
     
-    # Chạy bot (polling)
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
